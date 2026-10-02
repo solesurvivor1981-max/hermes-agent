@@ -56,6 +56,9 @@ jobs:
           script_stop: true
           script: /usr/local/bin/sauce-deploy-agent.sh ${{ github.sha }}
 
+      - name: Checkout for notify
+        uses: actions/checkout@v4
+
       - name: Notify Telegram
         if: always()
         env:
