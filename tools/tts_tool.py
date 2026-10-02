@@ -2186,8 +2186,12 @@ TTS_SCHEMA = {
     }
 }
 
+# DISABLED (02.10.2026, решение Александра): Соус не отвечает голосом вообще.
+# Голосовые ответы отключены тотально — даже по просьбе (навык пере-обучить невозможно:
+# память помнит «отвечать голосом», модель продолжала TTS-ить). Если понадобится вернуть —
+# убрать _DISABLED из имени регистрации ниже.
 registry.register(
-    name="text_to_speech",
+    name="text_to_speech_DISABLED",
     toolset="tts",
     schema=TTS_SCHEMA,
     handler=lambda args, **kw: text_to_speech_tool(

@@ -6529,7 +6529,21 @@ class GatewayRunner:
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
+                    # Plugin command context (chat-scoped commands), back-compatible:
+                    import inspect as _inspect
+                    _names = set(_inspect.signature(plugin_handler).parameters.keys())
+                    _ctx_kwargs = {}
+                    _src = getattr(event, "source", None)
+                    if "chat_id" in _names:
+                        _ctx_kwargs["chat_id"] = str((getattr(_src, "chat_id", "") or ""))
+                    if "sender_id" in _names:
+                        _ctx_kwargs["sender_id"] = str((getattr(_src, "user_id", "") or ""))
+                    if "chat_name" in _names:
+                        _ctx_kwargs["chat_name"] = str((getattr(_src, "chat_name", "") or ""))
+                    try:
+                        result = plugin_handler(user_args, **_ctx_kwargs)
+                    except TypeError:
+                        result = plugin_handler(user_args)
                     if asyncio.iscoroutine(result):
                         result = await result
                     return str(result) if result else None
@@ -6707,15 +6721,23 @@ class GatewayRunner:
         if _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
+        _pending_reports = getattr(self, "_pending_video_reports", None)
+        if _pending_reports is None:
+            _pending_reports = {}
+            self._pending_video_reports = _pending_reports
+
         if event.media_urls:
             image_paths = []
             audio_paths = []
+            video_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
                 if mtype.startswith("audio/") or event.message_type in (MessageType.VOICE, MessageType.AUDIO):
                     audio_paths.append(path)
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                    video_paths.append(path)
 
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
@@ -6742,11 +6764,133 @@ class GatewayRunner:
                         image_paths,
                     )
 
+            # Детерминированный видео-конвейер (патч 25.09.2026, v2: многок链接 + VK).
+            # Ссылки на видео в тексте: TikTok, Instagram, YouTube Shorts, VK Клипы.
+            import re as _re
+            _vurls = []
+            if message_text:
+                _vurls = [
+                    m.group(0).rstrip(".,;)")
+                    for m in _re.finditer(
+                        r"https?://(?:www\.)?(?:vm\.)?(?:tiktok\.com|instagram\.com|youtube\.com/shorts|youtu\.be|vk\.(?:com|ru)/(?:clip|video|clip-)[^\s)]+|vk\.com/clip[^\s)]*)\S*",
+                        message_text,
+                    )
+                ][:5]  # максимум 5 ссылок на сообщение
+
+            if video_paths:
+                # Детерминированный видео-конвейер (патч 25.09.2026): видео идёт
+                # напрямую в video-analyzer сервис, минуя агентские решения.
+                from gateway import video_router as _vr
+                for _vp in video_paths:
+                    if os.path.exists(_vp):
+                        # S3-архив (02.10.2026): входное видео -> media-sauce/inbox/,
+                        # реестр /root/.hermes-sauce/media-library/INDEX.jsonl;
+                        # агенту сообщаем только ключ (ссылку выдаёт по запросу).
+                        try:
+                            import subprocess as _sub
+                            import json as _json
+                            _client = (getattr(source, "user_name", None)
+                                       or getattr(source, "chat_name", None) or "general")
+                            _client_slug = "".join(
+                                c for c in str(_client).lower().replace(" ", "-")
+                                if c.isalnum() or c == "-"
+                            )[:32] or "general"
+                            _p = _sub.run(
+                                ["/opt/data/scripts/media_library.py", "put", _vp,
+                                 "--type", "inbox", "--client", _client_slug,
+                                 "--label", "вход от " + str(_client)],
+                                capture_output=True, text=True, timeout=300,
+                            )
+                            if _p.returncode in (0, 2):
+                                _res = _json.loads(_p.stdout)
+                                if _res.get("ok"):
+                                    _s3note = (
+                                        chr(10) * 2
+                                        + "[S3-БИБЛИОТЕКА: видео принято и сохранено. "
+                                        + "id=" + str(_res.get("id"))
+                                        + ", key=" + str(_res.get("key")) + ". "
+                                        + "Агенту: НЕ отправляй файл обратно и не выдавай ссылку сам — "
+                                        + "пользователь получает presigned-ссылку по запросу. "
+                                        + "Факт сохранения подтвердить клиенту одной строкой.]"
+                                    )
+                                    message_text += _s3note
+                        except Exception as _s3e:
+                            logger.warning("S3 media archive failed: %s", _s3e)
+                        message_text += (
+                            "\n\n[СИСТЕМА: видео отправлено в детерминированный "
+                            "конвейер анализа. Результат будет приложен к ответу "
+                            "файлом. Агенту: не анализируй видео самостоятельно — "
+                            "прокомментируй только приложенный отчёт.]"
+                        )
+                        _origin = source.chat_id if source else ""
+                        try:
+                            _loop = asyncio.get_running_loop()
+                            _insert = await asyncio.wait_for(
+                                _loop.run_in_executor(
+                                    None, _vr.analyze_video_file, _vp, _origin
+                                ),
+                                timeout=1300,
+                            )
+                            message_text += _insert
+                            _rm = _re.search(r"\[VIDEO_REPORT_READY:([^|\]]+)\|", _insert)
+                            if _rm:
+                                _pending_reports.setdefault(session_key, []).append(_rm.group(1))
+                        except Exception as _ve:
+                            message_text += (
+                                f"\n\n[Видео-анализ не удался: {str(_ve)[:150]}]"
+                            )
+            if not video_paths and _vurls:
+                # Жёсткий маршрут: ВСЕ ссылки на видео — через конвейер, без агента
+                from gateway import video_router as _vr
+                for _vu in _vurls:
+                    try:
+                        _loop = asyncio.get_running_loop()
+                        _insert = await asyncio.wait_for(
+                            _loop.run_in_executor(
+                                None, _vr.analyze_video_url, _vu, source.chat_id if source else ""
+                            ),
+                            timeout=1300,
+                        )
+                        message_text += _insert
+                        _rm = _re.search(r"\[VIDEO_REPORT_READY:([^|\]]+)\|", _insert)
+                        if _rm:
+                            _pending_reports.setdefault(session_key, []).append(_rm.group(1))
+                    except Exception as _ve:
+                        message_text += (
+                            f"\n\n[Видео-анализ не удался ({_vu[:40]}...): {str(_ve)[:120]}]"
+                        )
+
             if audio_paths:
                 message_text = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
                 )
+                # Голосовой отпечаток (детерминированный, 02.10.2026): сразу после
+                # транскрипции отправляем текстовую расшифровку в чат как отдельное
+                # сообщение — чтобы в истории чата остался читаемый отпечаток
+                # голосового. Патч во внутреннем коде hermes: переживает restart,
+                # теряется при recreate (переприменить patch_voice_print.py).
+                if "[The user sent a voice message~" in message_text:
+                    try:
+                        _vp_start = 0
+                        import re as _re_vp
+                        for _vp_m in _re_vp.finditer(r'\[The user sent a voice message~\s*Here' + "'" + r's what they said: "(.+?)"\]', message_text, _re_vp.S):
+                            _vp_text = _vp_m.group(1).strip()
+                            if not _vp_text:
+                                continue
+                            _vp_adapter = self.adapters.get(source.platform)
+                            _vp_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                            if _vp_adapter and _vp_text:
+                                try:
+                                    await _vp_adapter.send(
+                                        source.chat_id,
+                                        ("🎙️ От " + (getattr(source, "user_name", None) or getattr(source, "chat_name", None) or "клиента") + ": «" + _vp_text[:3500] + "»"),
+                                        metadata=_vp_meta,
+                                    )
+                                except Exception as _vp_err:
+                                    logger.debug("Voice print send failed: %s", _vp_err)
+                    except Exception as _vp_err:
+                        logger.debug("Voice print extraction failed: %s", _vp_err)
                 _stt_fail_markers = (
                     "No STT provider",
                     "STT is disabled",
@@ -7534,6 +7678,14 @@ class GatewayRunner:
                 return None
 
             response = agent_result.get("final_response") or ""
+            # Детерминированный видео-конвейер: прикрепляем отчёт файлом к ответу
+            if session_key:
+                _preps = getattr(self, "_pending_video_reports", {}) or {}
+                _rp = _preps.pop(session_key, None)
+                if _rp:
+                    for _r in _rp:
+                        if os.path.exists(_r):
+                            response += f"\n\nMEDIA:{_r}"
 
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to

@@ -4039,6 +4039,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         elif msg.video:
             try:
+                _vmax = int(os.getenv('TELEGRAM_MAX_VIDEO_MB', '50')) * 1024 * 1024
+                if msg.video.file_size and msg.video.file_size > _vmax:
+                    logger.warning('[Telegram] Video too large (%s bytes > %s), skipping', msg.video.file_size, _vmax)
+                    raise ValueError(f'Видео больше {_vmax // 1024 // 1024} МБ — не могу принять')
                 file_obj = await msg.video.get_file()
                 video_bytes = await file_obj.download_as_bytearray()
                 ext = ".mp4"
@@ -4078,7 +4082,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Check file size early so image documents cannot bypass the
                 # document size limit by taking the image path.
-                MAX_DOC_BYTES = 20 * 1024 * 1024
+                MAX_DOC_BYTES = 50 * 1024 * 1024
                 if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
                     event.text = (
                         "The document is too large or its size could not be verified. "

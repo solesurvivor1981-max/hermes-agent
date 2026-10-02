@@ -46,8 +46,12 @@ _HERMES_CORE_TOOLS = [
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
     # Text-to-speech
     "text_to_speech",
+    # Video analysis (deterministic, external service)
+    "video_analysis",
     # Planning & memory
-    "todo", "memory",
+    "todo", "memory", "board",
+    # Persistent per-chat task board (deterministic scope)
+    "board",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -186,6 +190,12 @@ TOOLSETS = {
     "todo": {
         "description": "Task planning and tracking for multi-step work",
         "tools": ["todo"],
+        "includes": []
+    },
+
+    "board": {
+        "description": "Persistent per-chat task board (add/list/done/cancel/edit/clean, due dates, repeat)",
+        "tools": ["board"],
         "includes": []
     },
     
@@ -329,7 +339,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo", "memory",
+            "todo", "memory", "board",
             "session_search",
             "execute_code", "delegate_task",
         ],
@@ -355,7 +365,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             # Planning & memory
-            "todo", "memory",
+            "todo", "memory", "board",
             # Session history search
             "session_search",
             # Code execution + delegation

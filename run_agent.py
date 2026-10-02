@@ -1861,6 +1861,19 @@ class AIAgent:
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
+
+        # Persistent per-chat task board (deterministic scope: chat for groups,
+        # user for DMs - same rule as memory). Never model-chosen.
+        try:
+            from tools.board_tool import BoardStore as _BoardStore
+            _board_scope = None
+            if getattr(self, "_chat_type", None) in ("group", "supergroup") and self._chat_id:
+                _board_scope = f"chat{self._chat_id}"
+            elif self._user_id:
+                _board_scope = f"user{self._user_id}"
+            self._board_store = _BoardStore(scope=_board_scope)
+        except Exception:
+            self._board_store = None
         
         # Load config once for memory, skills, and compression sections
         try:
@@ -1896,9 +1909,17 @@ class AIAgent:
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
+                    # Deterministic per-chat memory scope: groups share chat-scoped
+                    # memory, DMs get user-scoped memory (owner decision 25.09.2026).
+                    scope = None
+                    if getattr(self, "_chat_type", None) in ("group", "supergroup") and self._chat_id:
+                        scope = f"chat{self._chat_id}"
+                    elif self._user_id:
+                        scope = f"user{self._user_id}"
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
+                        memory_scope=scope,
                     )
                     self._memory_store.load_from_disk()
             except Exception:
@@ -10276,6 +10297,19 @@ class AIAgent:
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
 
+        if function_name == "board":
+            from tools.board_tool import board_tool as _board_tool
+            return _board_tool(
+                action=function_args.get("action", ""),
+                text=function_args.get("text"),
+                due=function_args.get("due"),
+                repeat=function_args.get("repeat"),
+                who=function_args.get("who"),
+                item_id=function_args.get("item_id"),
+                filter_=function_args.get("filter_"),
+                new_due=function_args.get("new_due", "__unset__"),
+                store=self._board_store,
+            )
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -10898,6 +10932,20 @@ class AIAgent:
                 # tool result for the original tool_call_id without executing.
                 function_result = self._guardrail_block_result(_guardrail_block_decision)
                 tool_duration = 0.0
+            elif function_name == "board":
+                from tools.board_tool import board_tool as _board_tool
+                function_result = _board_tool(
+                    action=function_args.get("action", ""),
+                    text=function_args.get("text"),
+                    due=function_args.get("due"),
+                    repeat=function_args.get("repeat"),
+                    who=function_args.get("who"),
+                    item_id=function_args.get("item_id"),
+                    filter_=function_args.get("filter_"),
+                    new_due=function_args.get("new_due", "__unset__"),
+                    store=self._board_store,
+                )
+                tool_duration = time.time() - tool_start_time
             elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(

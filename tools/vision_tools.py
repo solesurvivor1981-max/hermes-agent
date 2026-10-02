@@ -1410,7 +1410,10 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
 
 
 registry.register(
-    name="video_analyze",
+    # DISABLED (02.10.2026, решение Александра): анализ видео в чате Соуса запрещён —
+    # это работа отдельного бота видео-анализатора (@AIBoostVideoBot). Соус в чате:
+    # сценарии / нарезка / склейка / плашки / субтитры. Регистрация пропущена.
+    name="video_analyze_DISABLED",
     toolset="video",
     schema=VIDEO_ANALYZE_SCHEMA,
     handler=_handle_video_analyze,
