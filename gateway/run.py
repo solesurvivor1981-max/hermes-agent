@@ -6780,8 +6780,22 @@ class GatewayRunner:
             if video_paths:
                 # Детерминированный видео-конвейер (патч 25.09.2026): видео идёт
                 # напрямую в video-analyzer сервис, минуя агентские решения.
-                from gateway import video_router as _vr
+                # Импорт изолирован от остального хода (issue #23, sauce-app):
+                # модуль restored 05.10.2026 после инцидента, когда отсутствующий
+                # файл ронял ImportError'ом вообще любое видео-сообщение.
+                try:
+                    from gateway import video_router as _vr
+                except ImportError as _vie:
+                    logger.error("video_router import failed, video pipeline unavailable: %s", _vie)
+                    _vr = None
                 for _vp in video_paths:
+                    if _vr is None:
+                        message_text += (
+                            "\n\n[СИСТЕМА: видео-конвейер временно недоступен (ошибка "
+                            "загрузки модуля). Агенту: сообщить пользователю, что видео "
+                            "получено, но разбор сейчас недоступен — попробовать позже.]"
+                        )
+                        continue
                     if os.path.exists(_vp):
                         # S3-архив (02.10.2026): входное видео -> media-sauce/inbox/,
                         # реестр /root/.hermes-sauce/media-library/INDEX.jsonl;
@@ -6841,8 +6855,19 @@ class GatewayRunner:
                             )
             if not video_paths and _vurls:
                 # Жёсткий маршрут: ВСЕ ссылки на видео — через конвейер, без агента
-                from gateway import video_router as _vr
+                try:
+                    from gateway import video_router as _vr
+                except ImportError as _vie:
+                    logger.error("video_router import failed, video pipeline unavailable: %s", _vie)
+                    _vr = None
                 for _vu in _vurls:
+                    if _vr is None:
+                        message_text += (
+                            "\n\n[СИСТЕМА: видео-конвейер временно недоступен (ошибка "
+                            "загрузки модуля). Агенту: сообщить пользователю, что ссылка "
+                            "получена, но разбор сейчас недоступен — попробовать позже.]"
+                        )
+                        continue
                     try:
                         _loop = asyncio.get_running_loop()
                         _insert = await asyncio.wait_for(
