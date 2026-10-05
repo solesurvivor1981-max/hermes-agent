@@ -329,6 +329,35 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_unquoted_path_with_fused_non_ascii_word_is_trimmed(self):
+        """Regression (prod incident 2026-10-05): a model response with no
+        space between the extension and the next word —
+        "...fragment_0725-0820.mp4Файл готов" — made the fallback \\S+
+        branch swallow the trailing word into the path, so the real file
+        (which existed) was reported "not found" on send."""
+        content = "Готово! MEDIA:/opt/data/cache/videos/fragment_0725-0820.mp4Файл готов, отправляю!"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [("/opt/data/cache/videos/fragment_0725-0820.mp4", False)]
+
+    def test_unquoted_path_fused_with_second_media_tag_is_trimmed(self):
+        """Regression (same prod log, separate incident): two MEDIA: tags
+        for the same file with no separator between them merged into one
+        bogus path ending in "...mp4MEDIA:/opt/...mp4"."""
+        content = (
+            "MEDIA:/opt/data/marina/samples/clips/clip_julien_sistema.mp4"
+            "MEDIA:/opt/data/marina/samples/clips/clip_julien_sistema.mp4"
+        )
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [("/opt/data/marina/samples/clips/clip_julien_sistema.mp4", False)]
+
+    def test_unquoted_path_with_fused_ascii_word_is_left_alone(self):
+        """A trailing ASCII word right after the extension is NOT trimmed —
+        too easily a real (if unusual) filename; only non-ASCII fusion and
+        a repeated MEDIA: tag are treated as confident cut points."""
+        content = "MEDIA:/opt/data/weird_but_ascii.mp4suffix"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [("/opt/data/weird_but_ascii.mp4suffix", False)]
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the

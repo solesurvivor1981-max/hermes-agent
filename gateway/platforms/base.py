@@ -2066,11 +2066,30 @@ class BasePlatformAdapter(ABC):
         media_pattern = re.compile(
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa|md|markdown)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
+        # Fallback branch of media_pattern (bare \S+) has no extension-aware
+        # boundary, so when the model emits a path with nothing separating it
+        # from what follows, the trailing text gets fused onto the path and
+        # the file is never found. Two variants observed in prod (2026-10-05):
+        #   "...fragment_0725-0820.mp4Файл готов"             (trailing word)
+        #   "...clip.mp4MEDIA:/opt/data/.../clip.mp4"          (repeated tag)
+        # Trim back to right after a recognized extension when it's followed
+        # by a non-ASCII char, a second MEDIA: tag, or end-of-string. A
+        # trailing ASCII word (e.g. "movie.mp4suffix") is left untouched —
+        # too easily a real, if odd, filename to risk truncating.
+        _ext_boundary = re.compile(
+            r'\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac'
+            r'''|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa|md|markdown)'''
+            r'''(?=[\s`"',;:)\]}]|[^\x00-\x7F]|MEDIA:|$)''',
+            re.IGNORECASE,
+        )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            _m = _ext_boundary.search(path)
+            if _m:
+                path = path[:_m.end()]
             if path:
                 media.append((os.path.expanduser(path), has_voice_tag))
 
@@ -3158,6 +3177,20 @@ class BasePlatformAdapter(ABC):
 
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                            # The text reply (which may already claim delivery,
+                            # since text is sent before media) has gone out by
+                            # this point — the user has no way to know the
+                            # attachment failed unless we tell them. Observed
+                            # in prod 2026-10-05: agent said "доставлен выше",
+                            # user never got the file, warning only hit logs.
+                            try:
+                                await self._send_with_retry(
+                                    chat_id=event.source.chat_id,
+                                    content=f"⚠️ Не удалось отправить вложение {Path(media_path).name}: {media_result.error}",
+                                    metadata=_thread_metadata,
+                                )
+                            except Exception:
+                                pass
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
