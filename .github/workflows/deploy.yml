@@ -12,6 +12,10 @@ on:
       - ".github/workflows/**"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 concurrency:
   group: hermes-sauce-deploy
   cancel-in-progress: true
