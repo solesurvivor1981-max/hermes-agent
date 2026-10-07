@@ -215,6 +215,83 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
+    def test_bare_target_uses_current_session_chat_id_over_home_channel(self):
+        """A bare target="telegram" (no explicit chat_id) mid-conversation must
+        resolve to the LIVE chat, not the fixed home channel — regression test
+        for sauce-app issue #1 (MEDIA files/replies silently misrouted to a
+        stale home-channel chat_id instead of the chat the user was in)."""
+        home = SimpleNamespace(chat_id="-1001")
+        config, telegram_cfg = _make_config()
+        config.get_home_channel = lambda _platform: home
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.session_context.get_session_env") as get_session_env_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            get_session_env_mock.side_effect = lambda name, default="": {
+                "HERMES_SESSION_PLATFORM": "telegram",
+                "HERMES_SESSION_CHAT_ID": "312022420",
+            }.get(name, default)
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert "note" not in result  # home-channel note only fires when home channel is actually used
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "312022420",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
+    def test_bare_target_falls_back_to_home_channel_without_live_session(self):
+        """No live session (CLI/cron context, session vars cleared/empty) —
+        bare target="telegram" must still fall back to the home channel,
+        preserving existing behavior outside of a live conversation."""
+        home = SimpleNamespace(chat_id="-1001")
+        config, telegram_cfg = _make_config()
+        config.get_home_channel = lambda _platform: home
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.session_context.get_session_env", return_value=""), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["note"] == "Sent to telegram home channel (chat_id: -1001)"
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-1001",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
         leaked = "very-secret-query-token-123456"
