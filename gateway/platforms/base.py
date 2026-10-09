@@ -2073,13 +2073,17 @@ class BasePlatformAdapter(ABC):
         #   "...fragment_0725-0820.mp4Файл готов"             (trailing word)
         #   "...clip.mp4MEDIA:/opt/data/.../clip.mp4"          (repeated tag)
         # Trim back to right after a recognized extension when it's followed
-        # by a non-ASCII char, a second MEDIA: tag, or end-of-string. A
-        # trailing ASCII word (e.g. "movie.mp4suffix") is left untouched —
-        # too easily a real, if odd, filename to risk truncating.
+        # by a non-ASCII char, a second MEDIA: tag, markdown bold asterisks,
+        # or end-of-string. A trailing ASCII word (e.g. "movie.mp4suffix") is
+        # left untouched — too easily a real, if odd, filename to risk
+        # truncating. Third variant observed in prod (2026-10-09):
+        #   "...reel_final.mp4** (готово)"   (markdown-bold, no space before **)
+        # — caught live by Tim (hotfixed directly in the running container,
+        # base.py line 2082, before this patch landed in git).
         _ext_boundary = re.compile(
             r'\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac'
             r'''|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa|md|markdown)'''
-            r'''(?=[\s`"',;:)\]}]|[^\x00-\x7F]|MEDIA:|$)''',
+            r'''(?=[\s`"',;:)\]}]|[^\x00-\x7F]|MEDIA:|\*|$)''',
             re.IGNORECASE,
         )
         for match in media_pattern.finditer(content):
