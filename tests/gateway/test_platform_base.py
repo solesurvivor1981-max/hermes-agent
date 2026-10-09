@@ -350,6 +350,17 @@ class TestExtractMedia:
         media, _ = BasePlatformAdapter.extract_media(content)
         assert media == [("/opt/data/marina/samples/clips/clip_julien_sistema.mp4", False)]
 
+    def test_unquoted_path_fused_with_markdown_bold_asterisks_is_trimmed(self):
+        """Regression (prod incident 2026-10-09, caught live by Tim and
+        hotfixed directly in the running container before this test/patch
+        landed in git): a model response with markdown-bold formatting
+        right after the extension, no space before the asterisks —
+        "...reel_final.mp4** (готово)" — fused the "**" onto the path,
+        so the real file (which existed) was reported not found on send."""
+        content = "MEDIA:/opt/data/marina/order-reel/20261009/reel_final.mp4** (готово)"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [("/opt/data/marina/order-reel/20261009/reel_final.mp4", False)]
+
     def test_unquoted_path_with_fused_ascii_word_is_left_alone(self):
         """A trailing ASCII word right after the extension is NOT trimmed —
         too easily a real (if unusual) filename; only non-ASCII fusion and
